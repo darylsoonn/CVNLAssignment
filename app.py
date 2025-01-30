@@ -5,7 +5,7 @@ from nltk.tokenize import word_tokenize
 from sklearn.preprocessing import LabelEncoder
 import numpy as np
 import torch.nn as nn
-from flask_cors import CORS  # Import CORS
+from flask_cors import CORS  
 
 # Define the RNN model class
 class RNNModel(nn.Module):
