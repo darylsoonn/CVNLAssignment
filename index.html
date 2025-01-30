@@ -3,12 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Intent Prediction</title>
+    <title>Intent and Emotion Prediction</title>
     <script>
+        // Function to predict intent
         function predictIntent() {
-            const sentence = document.getElementById('sentence').value;
+            const sentence = document.getElementById('sentence_intent').value;
             
-            fetch('http://127.0.0.1:5000/predict', {
+            fetch('http://127.0.0.1:5000/predict_intent', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -17,7 +18,27 @@
             })
             .then(response => response.json())
             .then(data => {
-                document.getElementById('result').innerHTML = 'Predicted Intent: ' + data.predicted_label;
+                document.getElementById('intent_result').innerHTML = 'Predicted Intent: ' + data.predicted_label;
+            })
+            .catch(error => {
+                console.error('Error:', error);
+            });
+        }
+
+        // Function to predict emotion
+        function predictEmotion() {
+            const sentence = document.getElementById('sentence_emotion').value;
+            
+            fetch('http://127.0.0.1:5000/predict_emotion', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ sentence: sentence })
+            })
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('emotion_result').innerHTML = 'Predicted Emotion: ' + data.predicted_label;
             })
             .catch(error => {
                 console.error('Error:', error);
@@ -26,11 +47,21 @@
     </script>
 </head>
 <body>
-    <h1>Intent Prediction</h1>
-    <label for="sentence">Enter a sentence:</label>
-    <input type="text" id="sentence" placeholder="Type here">
-    <button onclick="predictIntent()">Predict</button>
+    <h1>Intent and Emotion Prediction</h1>
 
-    <p id="result"></p>
+    <!-- Intent Prediction Section -->
+    <h2>Intent Prediction</h2>
+    <label for="sentence_intent">Enter a sentence for intent prediction:</label>
+    <input type="text" id="sentence_intent" placeholder="Type here">
+    <button onclick="predictIntent()">Predict Intent</button>
+    <p id="intent_result"></p>
+
+    <!-- Emotion Prediction Section -->
+    <h2>Emotion Prediction</h2>
+    <label for="sentence_emotion">Enter a sentence for emotion prediction:</label>
+    <input type="text" id="sentence_emotion" placeholder="Type here">
+    <button onclick="predictEmotion()">Predict Emotion</button>
+    <p id="emotion_result"></p>
+
 </body>
 </html>
