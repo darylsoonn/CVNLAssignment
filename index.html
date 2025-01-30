@@ -25,11 +25,10 @@
             });
         }
 
-        // Function to predict emotion
         function predictEmotion() {
             const sentence = document.getElementById('sentence_emotion').value;
-            
-            fetch('http://127.0.0.1:5000/predict_emotion', {
+    
+            fetch('http://127.0.0.1:5000/predict', {  // Ensure this points to your Flask API endpoint
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
