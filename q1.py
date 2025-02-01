@@ -1,64 +1,96 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, random_split, Subset
 from torchvision import datasets, transforms
 import matplotlib.pyplot as plt
-from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
 import seaborn as sns
-import time
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, classification_report
+import numpy as np
 
 # Hyperparameters
 BATCH_SIZE = 64
-EPOCHS = 40
-LEARNING_RATE = 0.001
+EPOCHS_ROBOFLOW = 10  # Roboflow Init Training
+EPOCHS_ASL = 3  # ASL Fine tuning
+EPOCHS_FINAL_ROBOFLOW = 7  # Roboflow Fine Tuning
+LEARNING_RATE = 0.0001
 IMG_SIZE = 64
-NUM_CLASSES = 29
+NUM_CLASSES = 26 # A-Z
+WEIGHT_DECAY = 1e-4  # Regularization to reduce overfitting
+EARLY_STOPPING_PATIENCE = 3  # Stop training if val loss does not improve
 
 # Check device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
-# Data Preprocessing
-transform = transforms.Compose([
+# Image Augmentation
+train_transform = transforms.Compose([
     transforms.Resize((IMG_SIZE, IMG_SIZE)),
     transforms.RandomHorizontalFlip(p=0.5),
-    transforms.RandomRotation(15),
-    transforms.ColorJitter(brightness=0.2, contrast=0.2),
+    transforms.RandomRotation(20),
+    transforms.ColorJitter(brightness=0.3, contrast=0.3),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.5], std=[0.5])
 ])
 
-# Dataset Paths
-data_dir = '/content/drive/MyDrive/asl_alphabet_dataset/'
+val_transform = transforms.Compose([
+    transforms.Resize((IMG_SIZE, IMG_SIZE)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.5], std=[0.5])
+])
 
-# Load Dataset
-full_dataset = datasets.ImageFolder(root=data_dir + 'train', transform=transform)
+# Roboflow Init Training
+roboflow_dir = '/content/American-Sign-Language-Letters-1/train'
+roboflow_dataset = datasets.ImageFolder(root=roboflow_dir, transform=train_transform)
 
-# Subset for Training
-subset_size = min(len(full_dataset), 10000)  # Limit dataset size
-subset_indices = torch.randperm(len(full_dataset))[:subset_size]
-subset = torch.utils.data.Subset(full_dataset, subset_indices)
+# Artificial Dataset Expansion (~4000 images)
+expanded_dataset = roboflow_dataset.samples * 3
+roboflow_dataset.samples = expanded_dataset
 
-# Split Dataset
-train_size = int(0.8 * len(subset))
-val_size = len(subset) - train_size
-train_dataset, val_dataset = random_split(subset, [train_size, val_size])
+# Split training and validation
+train_size_robo = int(0.8 * len(roboflow_dataset))
+val_size_robo = len(roboflow_dataset) - train_size_robo
+train_dataset_robo, val_dataset_robo = random_split(roboflow_dataset, [train_size_robo, val_size_robo])
+
+train_dataset_robo.dataset.transform = train_transform
+val_dataset_robo.dataset.transform = val_transform
+
+# ASL Fine tuneing
+data_dir_asl = '/content/drive/MyDrive/asl_alphabet_dataset/train'
+asl_dataset = datasets.ImageFolder(root=data_dir_asl, transform=train_transform)
+
+# Limit sample size (10k image)
+subset_size_asl = min(10000, len(asl_dataset))
+subset_indices_asl = torch.randperm(len(asl_dataset))[:subset_size_asl]
+asl_subset = Subset(asl_dataset, subset_indices_asl)
+
+# Split training and validation
+train_size_asl = int(0.8 * len(asl_subset))
+val_size_asl = len(asl_subset) - train_size_asl
+train_dataset_asl, val_dataset_asl = random_split(asl_subset, [train_size_asl, val_size_asl])
+
+train_dataset_asl.dataset.transform = train_transform
+val_dataset_asl.dataset.transform = val_transform
 
 # DataLoaders
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
-val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
+train_loader_robo = DataLoader(train_dataset_robo, batch_size=BATCH_SIZE, shuffle=True, num_workers=2, pin_memory=True)
+val_loader_robo = DataLoader(val_dataset_robo, batch_size=BATCH_SIZE, shuffle=False, num_workers=2, pin_memory=True)
+train_loader_asl = DataLoader(train_dataset_asl, batch_size=BATCH_SIZE, shuffle=True, num_workers=2, pin_memory=True)
+val_loader_asl = DataLoader(val_dataset_asl, batch_size=BATCH_SIZE, shuffle=False, num_workers=2, pin_memory=True)
 
-# Define Custom CNN Model
-class CustomCNN(nn.Module):
+# CNN Model (3, 64, 128, 256, 512)
+class aslCNN(nn.Module):
     def __init__(self, num_classes):
-        super(CustomCNN, self).__init__()
-        self.conv1 = nn.Conv2d(3, 32, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
+        super(aslCNN, self).__init__()
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(128, 256, kernel_size=3, padding=1)
+        self.conv4 = nn.Conv2d(256, 512, kernel_size=3, padding=1)
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.fc1 = nn.Linear(128 * (IMG_SIZE // 8) * (IMG_SIZE // 8), 256)
-        self.fc2 = nn.Linear(256, num_classes)
+        self.batch_norm = nn.BatchNorm2d(512)
+        self.fc1 = nn.Linear(512 * (IMG_SIZE // 16) * (IMG_SIZE // 16), 1024)
+        self.fc2 = nn.Linear(1024, 512)
+        self.fc3 = nn.Linear(512, num_classes)
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(0.5)
 
@@ -69,49 +101,82 @@ class CustomCNN(nn.Module):
         x = self.pool(x)
         x = self.relu(self.conv3(x))
         x = self.pool(x)
+        x = self.relu(self.conv4(x))
+        x = self.batch_norm(x)
+        x = self.pool(x)
         x = x.view(x.size(0), -1)
         x = self.relu(self.fc1(x))
         x = self.dropout(x)
-        x = self.fc2(x)
+        x = self.relu(self.fc2(x))
+        x = self.fc3(x)
         return x
 
-# Initialize Model
-model = CustomCNN(num_classes=NUM_CLASSES)
-model = model.to(device)
+# Init Model
+model = aslCNN(num_classes=NUM_CLASSES).to(device)
 
-# Loss and Optimizer
+# Loss Fn and Optimiser
 criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
 
-# Training Function
-def train_model(model, train_loader, criterion, optimizer, epochs):
+# Training Fn with Early Stop
+def train_model(model, train_loader, val_loader, criterion, optimizer, epochs, phase):
     model.train()
-    for epoch in range(epochs):
-        running_loss = 0.0
-        print(f"Epoch {epoch + 1}/{epochs}")
-        for i, (images, labels) in enumerate(train_loader):
-            images, labels = images.to(device), labels.to(device)
+    best_val_loss = float('inf')
+    patience = 0
+    train_losses, val_losses = [], []
 
-            # Forward pass
+    for epoch in range(epochs):
+        print(f"Epoch {epoch + 1}/{epochs} ({phase} Phase)")
+        running_loss = 0.0
+
+        # Training
+        for batch_idx, (images, labels) in enumerate(train_loader):
+            images, labels = images.to(device), labels.to(device)
             optimizer.zero_grad()
             outputs = model(images)
             loss = criterion(outputs, labels)
-
-            # Backward pass and optimization
             loss.backward()
             optimizer.step()
-
             running_loss += loss.item()
-            if (i + 1) % 10 == 0:
-                print(f"  Batch {i + 1}/{len(train_loader)}, Loss: {loss.item():.4f}")
-        
-        print(f"Epoch [{epoch + 1}/{epochs}], Average Loss: {running_loss / len(train_loader):.4f}")
 
-# Evaluation Function
+            if batch_idx % (len(train_loader) // 10) == 0:
+                print(f"Progress: {batch_idx / len(train_loader) * 100:.1f}%")
+
+        train_losses.append(running_loss / len(train_loader))
+
+        # Validation
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for images, labels in val_loader:
+                images, labels = images.to(device), labels.to(device)
+                outputs = model(images)
+                val_loss += criterion(outputs, labels).item()
+
+        val_losses.append(val_loss / len(val_loader))
+        print(f"Validation Loss: {val_losses[-1]:.4f}")
+
+        # Early Stop
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            torch.save(model.state_dict(), "/content/drive/MyDrive/asl_model_hailmary.pth")
+            patience = 0
+        else:
+            patience += 1
+            if patience >= EARLY_STOPPING_PATIENCE:
+                print("Early Stopping Triggered!")
+                break
+
+# Flow plan
+train_model(model, train_loader_robo, val_loader_robo, criterion, optimizer, EPOCHS_ROBOFLOW, "Roboflow")
+train_model(model, train_loader_asl, val_loader_asl, criterion, optimizer, EPOCHS_ASL, "ASL")
+train_model(model, train_loader_robo, val_loader_robo, criterion, optimizer, EPOCHS_FINAL_ROBOFLOW, "Roboflow_Final")
+
 def evaluate_model(model, val_loader):
     model.eval()
     all_preds = []
     all_labels = []
+
     with torch.no_grad():
         for images, labels in val_loader:
             images, labels = images.to(device), labels.to(device)
@@ -120,20 +185,26 @@ def evaluate_model(model, val_loader):
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
 
+    # Compute evaluation metrics
     accuracy = accuracy_score(all_labels, all_preds)
+    precision = precision_score(all_labels, all_preds, average='macro')
+    recall = recall_score(all_labels, all_preds, average='macro')
+    f1 = f1_score(all_labels, all_preds, average='macro')
+
     print(f"Validation Accuracy: {accuracy:.4f}")
-    print("Classification Report:\n", classification_report(all_labels, all_preds))
+    print(f"Precision: {precision:.4f}")
+    print(f"Recall: {recall:.4f}")
+    print(f"F1-Score: {f1:.4f}")
+    print("\nClassification Report:\n", classification_report(all_labels, all_preds))
+
+    # Generate Confusion Matrix
     cm = confusion_matrix(all_labels, all_preds)
     plt.figure(figsize=(10, 8))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=full_dataset.classes, yticklabels=full_dataset.classes)
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=range(NUM_CLASSES), yticklabels=range(NUM_CLASSES))
     plt.xlabel('Predicted Labels')
     plt.ylabel('True Labels')
     plt.title('Confusion Matrix')
     plt.show()
 
-# Train and Evaluate
-train_model(model, train_loader, criterion, optimizer, EPOCHS)
-evaluate_model(model, val_loader)
-
-# Save Model
-torch.save(model.state_dict(), "/content/drive/MyDrive/asl_model6.pth")
+# Run model evaluation after final training
+evaluate_model(model, val_loader_robo)
